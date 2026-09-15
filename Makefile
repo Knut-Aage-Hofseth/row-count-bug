@@ -3,7 +3,7 @@ CXXSTD = -std=c++17
 WARNFLAGS = -Wall -Wextra
 INCLUDES = -I. -Ithird_party -Isrc
 
-SRCS = src/skip_row.cpp src/count_rows.cpp tests/test_row_count.cpp
+SRCS = src/skip_row.cpp src/skip_row_fixed.cpp src/count_rows.cpp tests/test_row_count.cpp
 LIBS = -lz
 
 BUILD_DIR = build

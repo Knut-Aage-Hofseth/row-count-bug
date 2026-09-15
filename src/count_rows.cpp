@@ -36,12 +36,12 @@
 
 #include "skip_row.h"
 
-size_t countRows(MiniReadBuffer & buf, size_t max_block_size, bool allow_cr_end_of_line)
+size_t countRows(MiniReadBuffer & buf, size_t max_block_size, bool allow_cr_end_of_line, SkipRowFn skip_row_fn)
 {
     size_t num_rows = 0;
     while (!buf.eof() && num_rows < max_block_size)
     {
-        skipRow(buf, allow_cr_end_of_line);
+        skip_row_fn(buf, allow_cr_end_of_line);
         ++num_rows;
     }
     return num_rows;

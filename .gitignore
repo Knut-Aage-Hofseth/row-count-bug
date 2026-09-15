@@ -2,8 +2,13 @@
 *.csv
 *.csv.gz
 *.gz
-fixtures/
 data/
+
+# Exception: purely-synthetic, generated fixtures (no real data, safe to
+# commit) produced by tests/fixtures/generate_test_files.py.
+!tests/fixtures/*.csv
+!tests/fixtures/*.csv.gz
+!tests/fixtures/generate_test_files.py
 
 # Build output
 build/
