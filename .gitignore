@@ -1,0 +1,18 @@
+# Real/synthetic data files — never commit real production data.
+*.csv
+*.csv.gz
+*.gz
+fixtures/
+data/
+
+# Build output
+build/
+*.o
+*.out
+test_row_count
+test_row_count_asan
+
+# Editor/OS noise
+.vscode/
+*.swp
+.DS_Store
