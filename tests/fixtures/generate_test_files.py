@@ -71,7 +71,12 @@ def _append_row_targeting_offset(out: bytearray, i: int, target_byte_offset: int
         # Ordinary filler row, keep going.
         out += prefix + b'"000000"\r\n'
         i += 1
-        if i > 10_000:
+        # Cap scales with target_byte_offset (rather than a fixed constant)
+        # so this converges for both the small (buf_size=64) and real-scale
+        # (buf_size=1048576, i.e. DBMS_DEFAULT_BUFFER_SIZE) cases: at ~11
+        # bytes/filler-row, reaching an offset of ~2*buf_size can take on the
+        # order of buf_size/5 rows.
+        if i > 2 * target_byte_offset + 10_000:
             raise RuntimeError(f"Could not converge on target_byte_offset={target_byte_offset}")
 
 
