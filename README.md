@@ -98,18 +98,44 @@ same dataset.
 3. **Fixed version** (`skipRowFixed()`, one-line change: `*pos` →
    `*istr.position()`) gives the correct **15000** under *both* refill
    strategies, and produces **no** ASAN finding at all.
-4. **Minimal synthetic repro** (`tests/fixtures/boundary_64.csv[.gz]`, 147
-   bytes, `buf_size=64`, containing no real data — safe to commit):
-   engineered so both coincidences above hold. Reproduces the exact same
-   bug class end-to-end: buggy+`InPlaceReuse` → 4 rows (should be 3);
-   ASAN confirms `heap-use-after-free`, "63 bytes inside of 64-byte region"
-   under buggy+`FreeAndReallocate`; fixed version → correct (3) under both
-   strategies, no ASAN finding.
-5. **Negative control** (`tests/fixtures/control_64.csv[.gz]`): same
+4. **Minimal synthetic repro** (`tests/fixtures/boundary_1048576.csv[.gz]`,
+   ~2 MB, `buf_size=1048576` — matching `DBMS_DEFAULT_BUFFER_SIZE`, i.e. the
+   real ClickHouse default — containing no real data; generated on demand,
+   not committed, see "Data handling" below): engineered so both
+   coincidences above hold. Reproduces the exact same bug class end-to-end:
+   buggy+`InPlaceReuse` → 110169 rows (should be 110168); ASAN confirms
+   `heap-use-after-free`, "1048575 bytes inside of 1048576-byte region"
+   under buggy+`FreeAndReallocate`; fixed version → correct (110168) under
+   both strategies, no ASAN finding.
+5. **Negative control** (`tests/fixtures/control_1048576.csv[.gz]`): same
    structure, CRLF shifted one byte so it sits safely within a single
    chunk (no boundary coincidence) — buggy code gives the correct count
-   (2/2), proving the bug is specifically about the boundary coincidence,
-   not just "any CRLF-terminated CSV".
+   (55084/55084), proving the bug is specifically about the boundary
+   coincidence, not just "any CRLF-terminated CSV".
+6. **Live ClickHouse server** (version 26.3.32.14): the same
+   `boundary_1048576.csv[.gz]` / `control_1048576.csv[.gz]` fixtures,
+   copied into `user_files` and queried via
+   `SELECT count() FROM file(...) SETTINGS optimize_count_from_files = 1`
+   with **default settings** (no `max_read_buffer_size` override needed —
+   1,048,576 already matches the real default), reproduce exactly the same
+   +1 over-count on `boundary_1048576` (110169 vs. ground-truth 110168) and
+   the correct count on `control_1048576` (55084), for both the plain and
+   gzip-compressed variants. This confirms the bug (and its fixture) is not
+   an artifact of this standalone harness — it reproduces identically
+   against a real, unmodified ClickHouse server.
+
+An earlier, smaller synthetic fixture (`buf_size=64`, ~150 bytes) reproduced
+the bug in this standalone harness but did **not** reproduce against a live
+server at that scale: `max_read_buffer_size` only resizes the raw
+compressed/file-level read buffer, not the zlib decompression *output*
+buffer (which is hardcoded to `DBMS_DEFAULT_BUFFER_SIZE` via
+`wrapReadBufferWithCompressionMethod`'s default argument), and even the
+plain (uncompressed) case didn't reproduce at that tiny scale — most likely
+because `CSVFormatReader::skipRow()`'s `istr` is actually a
+`PeekableReadBuffer` wrapping the raw buffer, not the raw buffer itself,
+and its own buffering behavior differs from the raw buffer's own
+chunk-boundary alignment at very small sizes. Matching the real default
+buffer size sidesteps this entirely and was sufficient to reproduce live.
 
 ## Approach (as executed)
 
@@ -122,17 +148,24 @@ same dataset.
 - **Phase 1.5**: added `skipRowFixed()` — the same logic with the one-line
   fix — and ran it against the same real file under both strategies.
   **Result: correct count (15000) in all cases, no ASAN finding.**
-- **Phase 2**: engineered small (147-byte), purely-synthetic, committed
-  fixture files reproducing both required coincidences at a much smaller
-  `buf_size` (64, vs. the real 1,048,576), plus a negative control.
+- **Phase 2**: engineered small (147-byte), purely-synthetic fixture files
+  reproducing both required coincidences at a much smaller `buf_size` (64,
+  vs. the real 1,048,576), plus a negative control.
   **Result: the synthetic files reproduce the exact same bug class (and
-  its fix) as the real file — the real gzip/1 MiB-buffer specifics were
-  not load-bearing; only the two coincidences described above are.**
+  its fix) as the real file in this standalone harness — but, see Phase 3,
+  did not reproduce against a live server at that tiny scale.**
   (First attempt at a synthetic file only engineered coincidence #1 and
   did *not* reproduce the bug — see git history / script comments for why:
   the second refill was too short to overwrite the stale byte at all. This
   is itself informative and is documented in
   `tests/fixtures/generate_test_files.py`.)
+- **Phase 3**: regenerated the synthetic fixtures at the real
+  `buf_size=1048576` (`DBMS_DEFAULT_BUFFER_SIZE`) instead of the toy 64-byte
+  scale, and ran the resulting `count()` queries against a live ClickHouse
+  server (version 26.3.32.14) via `file('boundary_1048576.csv[.gz]', ...)`.
+  **Result: reproduces live, with default settings, for both plain and
+  gzip-compressed CSV — confirming the bug (and this fixture) live outside
+  the standalone harness.**
 
 ## Project rule: no unproven simplifications
 
@@ -153,9 +186,11 @@ corresponding test cases are skipped (not failed), so the suite still runs
 cleanly for anyone without access to the real file. Optionally set
 `ROWCOUNT_EXPECTED_DATA_ROWS` to assert the count against a known value.
 
-`.gitignore` excludes `*.csv`/`*.csv.gz`/`*.gz`/`data/` by default, with a
-narrow, explicit exception for the purely-synthetic, generated fixtures
-under `tests/fixtures/` (which contain no real data and are safe to commit).
+`.gitignore` excludes `*.csv`/`*.csv.gz`/`*.gz`/`data/` by default. The
+generated synthetic fixtures under `tests/fixtures/` are **not committed**
+(regenerated on demand via `make fixtures` / `generate_test_files.py`,
+since the real-scale ones are ~2 MB) — only the generator script itself is
+tracked in git.
 
 ## Project layout
 
@@ -178,10 +213,11 @@ Row-Count-Bug/
 │   │                            strategies) + synthetic fixtures (boundary/
 │   │                            control x buggy/fixed x 2 strategies)
 │   └── fixtures/
-│       ├── generate_test_files.py  — builds the synthetic repro/control files
-│       ├── boundary_64.csv[.gz]    — engineers both required coincidences
-│       └── control_64.csv[.gz]     — negative control (no boundary coincidence)
-└── Makefile                   — `make test`, `make test-asan`
+│       └── generate_test_files.py  — builds the synthetic repro/control
+│                                      files (boundary_<N>.csv[.gz],
+│                                      control_<N>.csv[.gz] — not committed,
+│                                      see "Data handling")
+└── Makefile                   — `make fixtures`, `make test`, `make test-asan`
 ```
 
 ## Usage
@@ -191,7 +227,8 @@ Row-Count-Bug/
 export ROWCOUNT_TEST_FILE=/absolute/path/to/real_file.csv.gz
 export ROWCOUNT_EXPECTED_DATA_ROWS=15000
 
-make test        # normal build, all test cases (real file if set + synthetic fixtures)
+make test        # regenerates fixtures (via `make fixtures`) if missing,
+                  # then builds+runs all test cases
 make test-asan   # same tests under -fsanitize=address,undefined
 
 # To isolate buggy vs. fixed (the combined ASAN binary aborts on the first
@@ -199,15 +236,15 @@ make test-asan   # same tests under -fsanitize=address,undefined
 ./build/test_row_count_asan --test-case="*[buggy]*"
 ./build/test_row_count_asan --test-case="*[fixed]*"
 
-# To regenerate the synthetic fixtures (or build new ones at a different buf_size):
-python3 tests/fixtures/generate_test_files.py 64 tests/fixtures
+# To (re)generate the synthetic fixtures manually, or build new ones at a
+# different buf_size:
+python3 tests/fixtures/generate_test_files.py 1048576 tests/fixtures
 ```
 
 ## Suggested next steps
 
-- Draft an upstream ClickHouse GitHub issue using this repo as the minimal
-  repro (the synthetic `boundary_64.csv.gz` + ASAN trace is small and
-  self-contained enough to paste directly into an issue).
+- Post the upstream ClickHouse pull request (draft prepared, includes the
+  live-server-confirmed repro steps using `generate_test_files.py 1048576`).
 - `check_rowcounts.sh` (in the `Scripts` repo) was already updated with
   `optimize_count_from_files=0` before this root cause was fully confirmed
   — that fix is validated by everything in this repo.

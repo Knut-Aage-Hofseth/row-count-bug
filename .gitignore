@@ -4,10 +4,13 @@
 *.gz
 data/
 
-# Exception: purely-synthetic, generated fixtures (no real data, safe to
-# commit) produced by tests/fixtures/generate_test_files.py.
-!tests/fixtures/*.csv
-!tests/fixtures/*.csv.gz
+# Only the generator script is tracked; the fixture files it produces
+# (regardless of buf_size) are regenerated on demand via `make fixtures` /
+# generate_test_files.py and are not committed. (Note: two small
+# already-committed fixtures from an earlier round, boundary_64.csv[.gz] /
+# control_64.csv[.gz], remain tracked — .gitignore only affects untracked
+# files, so this exception list intentionally does not re-exempt fixture
+# CSVs from the blanket *.csv/*.csv.gz exclusion above.)
 !tests/fixtures/generate_test_files.py
 
 # Build output
